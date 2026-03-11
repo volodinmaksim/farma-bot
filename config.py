@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     PORT: int
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=BASE_DIR / "farma.env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
