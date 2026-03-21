@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     DB_URL: str
     BOT_TOKEN: SecretStr
     REDIS_URL: str | None = None
+    RABBITMQ_URL: str | None = None
     BASE_URL: str
 
     CHAT_ID_TO_CHECK: int
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
 
     HOST: str
     PORT: int
+    RABBITMQ_PREFETCH: int = 1
+    RABBITMQ_MAX_RETRIES: int = 5
+    RABBITMQ_RETRY_DELAY_MS: int = 30000
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / "farma.env",

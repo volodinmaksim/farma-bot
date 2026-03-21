@@ -1,25 +1,14 @@
-import asyncio
-from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from config import settings
 from db.db_helper import db_helper
 from db.models import Base
 from loader import bot, dp, logger, redis
-from redis.exceptions import ConnectionError as RedisConnectionError
-from routers import start_router
-
-BOT_NAME = "farma"
-PROCESSING_TTL_SECONDS = 30 * 60
-PROCESSED_TTL_SECONDS = 3 * 24 * 60 * 60
-PROCESSED_UPDATES_LIMIT = 5000
-_processed_update_ids_queue: deque[int] = deque(maxlen=PROCESSED_UPDATES_LIMIT)
-_processed_update_ids: set[int] = set()
-_processing_update_ids: set[int] = set()
-_background_tasks: set[asyncio.Task] = set()
+from rabbitmq import close_rabbitmq, init_rabbitmq, publish_update
 
 
 async def init_db():
@@ -29,10 +18,9 @@ async def init_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    dp.include_router(start_router)
-    await init_db()
-
     webhook_url = settings.BASE_URL + "/farma/webhook"
+    await init_db()
+    await init_rabbitmq()
     await bot.set_webhook(
         url=webhook_url,
         secret_token=settings.SECRET_TG_KEY,
@@ -42,6 +30,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await close_rabbitmq()
     await dp.storage.close()
     if redis is not None:
         await redis.aclose()
@@ -50,80 +39,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
-
-def _track_background_task(task: asyncio.Task) -> None:
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
-def _processing_update_key(update_id: int) -> str:
-    return f"tgbot:processing:{BOT_NAME}:{update_id}"
-
-
-def _processed_update_key(update_id: int) -> str:
-    return f"tgbot:processed:{BOT_NAME}:{update_id}"
-
-
-async def _remember_processed_update(update_id: int) -> None:
-    if redis is not None:
-        await redis.set(
-            _processed_update_key(update_id),
-            "1",
-            ex=PROCESSED_TTL_SECONDS,
-        )
-        return
-
-    if len(_processed_update_ids_queue) == PROCESSED_UPDATES_LIMIT:
-        stale_update_id = _processed_update_ids_queue.popleft()
-        _processed_update_ids.discard(stale_update_id)
-
-    _processed_update_ids_queue.append(update_id)
-    _processed_update_ids.add(update_id)
-
-
-async def _release_processing_update(update_id: int) -> None:
-    if redis is not None:
-        await redis.delete(_processing_update_key(update_id))
-        return
-
-    _processing_update_ids.discard(update_id)
-
-
-async def _try_acquire_update(update_id: int) -> bool:
-    if redis is not None:
-        if await redis.exists(_processed_update_key(update_id)):
-            return False
-
-        acquired = await redis.set(
-            _processing_update_key(update_id),
-            "1",
-            ex=PROCESSING_TTL_SECONDS,
-            nx=True,
-        )
-        return bool(acquired)
-
-    if update_id in _processed_update_ids or update_id in _processing_update_ids:
-        return False
-
-    _processing_update_ids.add(update_id)
-    return True
-
-
-async def _process_update_in_background(update) -> None:
-    update_id = update.update_id
-    try:
-        await dp.feed_update(bot, update)
-        await _remember_processed_update(update_id)
-    except RedisConnectionError as exc:
-        logger.error("Redis is unavailable while processing update: %s", exc)
-    except Exception as exc:
-        logger.error("Telegram update processing error: %s", exc, exc_info=True)
-    finally:
-        try:
-            await _release_processing_update(update_id)
-        except RedisConnectionError as exc:
-            logger.error("Redis cleanup failed for update %s: %s", update_id, exc)
 
 
 @app.post("/farma/webhook")
@@ -135,19 +50,10 @@ async def handle_telegram_webhook(request: Request):
             return JSONResponse({"status": "forbidden"}, status_code=403)
 
         update_data = await request.json()
-        from aiogram.types import Update
-
-        update = Update.model_validate(update_data)
-        update_id = update.update_id
-
-        if not await _try_acquire_update(update_id):
-            logger.info("Duplicate update skipped: %s", update_id)
-            return {"status": "ok"}
-
-        _track_background_task(asyncio.create_task(_process_update_in_background(update)))
+        await publish_update(update_data)
         return {"status": "ok"}
-    except RedisConnectionError as exc:
-        logger.error("Redis is unavailable while accepting update: %s", exc)
+    except (RedisConnectionError, RuntimeError) as exc:
+        logger.error("Webhook ingress unavailable: %s", exc)
         return JSONResponse({"status": "degraded"}, status_code=503)
     except Exception as exc:
         logger.error("Telegram webhook error: %s", exc, exc_info=True)
