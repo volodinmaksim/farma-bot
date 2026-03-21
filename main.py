@@ -1,23 +1,28 @@
+import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from redis.exceptions import ConnectionError as RedisConnectionError
 
 from config import settings
 from db.db_helper import db_helper
 from db.models import Base
 from loader import bot, dp, logger, redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from routers import start_router
 
 PROCESSED_UPDATES_LIMIT = 5000
 _processed_update_ids_queue: deque[int] = deque(maxlen=PROCESSED_UPDATES_LIMIT)
 _processed_update_ids: set[int] = set()
+_processing_update_ids: set[int] = set()
+_background_tasks: set[asyncio.Task] = set()
+
 
 async def init_db():
     async with db_helper.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,7 +33,7 @@ async def lifespan(app: FastAPI):
     await bot.set_webhook(
         url=webhook_url,
         secret_token=settings.SECRET_TG_KEY,
-        drop_pending_updates=True,
+        drop_pending_updates=False,
     )
     logger.info("Webhook set to: %s", webhook_url)
 
@@ -44,6 +49,29 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+def _track_background_task(task: asyncio.Task) -> None:
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _process_update_in_background(update) -> None:
+    update_id = update.update_id
+    try:
+        await dp.feed_update(bot, update)
+        if len(_processed_update_ids_queue) == PROCESSED_UPDATES_LIMIT:
+            stale_update_id = _processed_update_ids_queue.popleft()
+            _processed_update_ids.discard(stale_update_id)
+
+        _processed_update_ids_queue.append(update_id)
+        _processed_update_ids.add(update_id)
+    except RedisConnectionError as exc:
+        logger.error("Redis is unavailable while processing update: %s", exc)
+    except Exception as exc:
+        logger.error("Telegram update processing error: %s", exc, exc_info=True)
+    finally:
+        _processing_update_ids.discard(update_id)
+
+
 @app.post("/farma/webhook")
 async def handle_telegram_webhook(request: Request):
     try:
@@ -57,22 +85,13 @@ async def handle_telegram_webhook(request: Request):
 
         update = Update.model_validate(update_data)
 
-        if update.update_id in _processed_update_ids:
+        if update.update_id in _processed_update_ids or update.update_id in _processing_update_ids:
             logger.info("Duplicate update skipped: %s", update.update_id)
             return {"status": "ok"}
 
-        if len(_processed_update_ids_queue) == PROCESSED_UPDATES_LIMIT:
-            stale_update_id = _processed_update_ids_queue.popleft()
-            _processed_update_ids.discard(stale_update_id)
-
-        _processed_update_ids_queue.append(update.update_id)
-        _processed_update_ids.add(update.update_id)
-
-        await dp.feed_update(bot, update)
+        _processing_update_ids.add(update.update_id)
+        _track_background_task(asyncio.create_task(_process_update_in_background(update)))
         return {"status": "ok"}
-    except RedisConnectionError as exc:
-        logger.error("Redis is unavailable while processing update: %s", exc)
-        return {"status": "degraded"}
     except Exception as exc:
         logger.error("Telegram webhook error: %s", exc, exc_info=True)
         return JSONResponse({"status": "error"}, status_code=500)

@@ -1,4 +1,7 @@
+﻿from contextlib import suppress
+
 from aiogram import Bot, F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -30,6 +33,9 @@ async def cmd_start(message: types.Message, command: CommandObject):
 
 @router.callback_query(F.data == "check_sub")
 async def verify_subscription(callback: types.CallbackQuery, bot: Bot):
+    with suppress(TelegramBadRequest):
+        await callback.answer()
+
     user_sub = await bot.get_chat_member(
         chat_id=settings.CHAT_ID_TO_CHECK,
         user_id=callback.from_user.id,
@@ -47,7 +53,6 @@ async def verify_subscription(callback: types.CallbackQuery, bot: Bot):
         await callback.message.answer(text_subscription_is_confirmed, parse_mode="HTML")
         await callback.message.answer(f"Ваша ссылка: {settings.YDISK_LINK}")
         await callback.message.answer(text_after_link, parse_mode="HTML")
-        await callback.answer()
         return
 
-    await callback.answer("Вы еще не подписались на канал!", show_alert=True)
+    await callback.message.answer("Вы еще не подписались на канал!")
