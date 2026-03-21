@@ -1,7 +1,8 @@
-from asyncio import current_task
+﻿from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
-    async_scoped_session,
+    AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
@@ -24,11 +25,10 @@ class DataBaseHelper:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
 
-    def get_scoped_session(self):
-        return async_scoped_session(
-            session_factory=self.session_factory,
-            scopefunc=current_task,
-        )
+    @asynccontextmanager
+    async def session(self) -> AsyncGenerator[AsyncSession, Any]:
+        async with self.session_factory() as session:
+            yield session
 
 
 db_helper = DataBaseHelper(settings.DB_URL)
