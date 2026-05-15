@@ -4,7 +4,7 @@ import contextlib
 from db.db_helper import db_helper
 from db.models import Base
 from loader import bot, dp, logger, redis
-from routers import start_router
+from routers import second_channel_broadcast_router, start_router
 
 
 async def init_db() -> None:
@@ -14,6 +14,7 @@ async def init_db() -> None:
 
 def register_routers() -> None:
     dp.include_router(start_router)
+    dp.include_router(second_channel_broadcast_router)
 
 
 async def main() -> None:

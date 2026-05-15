@@ -17,6 +17,7 @@ from loader import bot, redis
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_RUN_AT = datetime(2026, 5, 16, 12, 24, tzinfo=MOSCOW_TZ)
 BROADCAST_SENT_EVENT = "second_channel_subscription_broadcast_sent_2026_05_16"
+CHECK_CALLBACK_DATA = "check_second_channel_broadcast_sub"
 
 BROADCAST_TEXT = """
 Привет.
@@ -47,7 +48,7 @@ def build_keyboard():
 
     builder = InlineKeyboardBuilder()
     builder.button(text="Подписаться", url=settings.SECOND_CHAT_URL)
-    builder.button(text="Проверить", callback_data="check_sub")
+    builder.button(text="Проверить", callback_data=CHECK_CALLBACK_DATA)
     builder.adjust(1)
     return builder.as_markup()
 
