@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     RABBITMQ_URL: str | None = None
     BASE_URL: str
     WEBHOOK_IP_ADDRESS: str | None = None
+    ADMIN_ID: int | None = None
 
     CHAT_ID_TO_CHECK: int
     CHAT_URL: str
