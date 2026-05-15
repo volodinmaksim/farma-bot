@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     CHAT_ID_TO_CHECK: int
     CHAT_URL: str
+    SECOND_CHAT_ID_TO_CHECK: int | None = None
+    SECOND_CHAT_URL: str | None = None
     SECRET_TG_KEY: str
     YDISK_LINK: str
 
